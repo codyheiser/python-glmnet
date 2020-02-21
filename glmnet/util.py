@@ -1,6 +1,6 @@
 import math
 import warnings
-
+import scanpy as sc
 import numpy as np
 
 from scipy.interpolate import interp1d
@@ -12,7 +12,7 @@ from sklearn.externals.joblib import Parallel, delayed
 from .scorer import check_scoring
 
 
-def _score_lambda_path(est, X, y, sample_weight, relative_penalties,
+def _score_lambda_path(est, adata, y, n_hvgs, sample_weight, relative_penalties,
                        scoring, n_jobs, verbose):
     """Score each model found by glmnet using cross validation.
 
@@ -21,11 +21,13 @@ def _score_lambda_path(est, X, y, sample_weight, relative_penalties,
     est : estimator
         The previously fitted estimator.
 
-    X : array, shape (n_samples, n_features)
-        Input features
+    adata : AnnData object with scaled input features in .X
 
     y : array, shape (n_samples,)
         Target values.
+
+    n_hvgs : int, number of highly-variable genes to select
+        in each training set
 
     sample_weight : array, shape (n_samples,)
         Weight of each row in X.
@@ -48,6 +50,7 @@ def _score_lambda_path(est, X, y, sample_weight, relative_penalties,
     scores : array, shape (n_lambda,)
         Scores for each value of lambda over all cv folds.
     """
+    X = adata.X.copy()  # take .X layer as input features
     scorer = check_scoring(est, scoring)
     cv_split = est._cv.split(X, y)
 
@@ -61,14 +64,14 @@ def _score_lambda_path(est, X, y, sample_weight, relative_penalties,
         warnings.simplefilter(action, UndefinedMetricWarning)
 
         scores = Parallel(n_jobs=n_jobs, verbose=verbose, backend='threading')(
-            delayed(_fit_and_score)(est, scorer, X, y, sample_weight, relative_penalties,
+            delayed(_fit_and_score)(est, scorer, adata, y, n_hvgs, sample_weight, relative_penalties,
                                     est.lambda_path_, train_idx, test_idx)
             for (train_idx, test_idx) in cv_split)
 
     return scores
 
 
-def _fit_and_score(est, scorer, X, y, sample_weight, relative_penalties,
+def _fit_and_score(est, scorer, adata, y, n_hvgs, sample_weight, relative_penalties,
                    score_lambda_path, train_inx, test_inx):
     """Fit and score a single model.
 
@@ -80,11 +83,13 @@ def _fit_and_score(est, scorer, X, y, sample_weight, relative_penalties,
     scorer : callable
         The scoring function to apply to each model.
 
-    X : array, shape (n_samples, n_features)
-        Input features
+    adata : AnnData object with scaled input features in .X
 
     y : array, shape (n_samples,)
         Target values.
+
+    n_hvgs : int, number of highly-variable genes to select
+        in each training set
 
     sample_weight : array, shape (n_samples,)
         Weight of each row in X.
@@ -109,6 +114,10 @@ def _fit_and_score(est, scorer, X, y, sample_weight, relative_penalties,
     scores : array, shape (n_lambda,)
         Scores for each value of lambda for a single cv fold.
     """
+    a = adata[train_inx, :].copy()  # select training set for fold
+    a.X = a.layers["log1p_norm"].copy()  # use log1p-transformed counts to calc HVGs
+    sc.pp.highly_variable_genes(a, n_top_genes=n_hvgs, flavor="seurat", inplace=True)  # determine HVGs with Seurat method
+    X = adata.X[:, a.var.highly_variable].copy()  # X becomes scaled counts for all cells in HVGs only
     m = clone(est)
     m = m._fit(X[train_inx, :], y[train_inx], sample_weight[train_inx], relative_penalties)
 

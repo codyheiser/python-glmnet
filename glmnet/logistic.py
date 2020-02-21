@@ -1,5 +1,5 @@
 import numpy as np
-
+import scanpy as sc
 from scipy.special import expit
 from scipy.sparse import issparse, csc_matrix
 from scipy import stats
@@ -164,7 +164,7 @@ class LogitNet(BaseEstimator):
         self.max_features = max_features
         self.verbose = verbose
 
-    def fit(self, X, y, sample_weight=None, relative_penalties=None):
+    def fit(self, adata, y, n_hvgs, sample_weight=None, relative_penalties=None):
         """Fit the model to training data. If n_splits > 1 also run n-fold cross
         validation on all values in lambda_path.
 
@@ -200,6 +200,11 @@ class LogitNet(BaseEstimator):
         self : object
             Returns self.
         """
+        a = adata.copy()  # select training set for fold
+        a.X = a.layers["log1p_norm"].copy()  # use log1p-transformed counts to calc HVGs
+        sc.pp.highly_variable_genes(a, n_top_genes=n_hvgs, flavor="seurat", inplace=True)  # determine HVGs with Seurat method
+        X = adata.X[:, a.var.highly_variable].copy()  # X becomes scaled counts for all cells in HVGs only
+
         X, y = check_X_y(X, y, accept_sparse='csr', ensure_min_samples=2)
         if sample_weight is None:
             sample_weight = np.ones(X.shape[0])
@@ -234,7 +239,7 @@ class LogitNet(BaseEstimator):
             self._cv = self.CV(n_splits=self.n_splits, shuffle=True,
                                random_state=self.random_state)
 
-            cv_scores = _score_lambda_path(self, X, y, sample_weight,
+            cv_scores = _score_lambda_path(self, adata, y, n_hvgs, sample_weight,
                                            relative_penalties,
                                            self.scoring,
                                            n_jobs=self.n_jobs,
